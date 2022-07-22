@@ -30,11 +30,11 @@ class TenantMainMiddleware(MiddlewareMixin):
         """
         return remove_www(request.get_host().split(":")[0])
 
-    # def set_connection_to_public(self):
-    #     connection.set_schema_to_public()
+    def set_connection_to_public(self):
+        connection.set_schema_to_public()
 
-    # def set_connection_to_tenant(self, tenant):
-    #     connection.set_tenant(tenant)
+    def set_connection_to_tenant(self, tenant):
+        connection.set_tenant(tenant)
 
     def get_tenant(self, domain_model, hostname):
         domain = domain_model.objects.select_related("tenant").get(domain=hostname)
