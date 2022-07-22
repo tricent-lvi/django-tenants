@@ -4,7 +4,8 @@ from contextlib import ContextDecorator, contextmanager
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import connections, DEFAULT_DB_ALIAS, connection
-
+from functools import lru_cache
+from django.utils.module_loading import import_string
 
 try:
     from django.apps import apps
@@ -223,11 +224,20 @@ def schema_rename(
         tenant.save()
 
 
+@lru_cache(maxsize=128)
+def get_app_label(string):
+    candidate = string.split(".")[-1]
+    try:
+        return getattr(import_string(string), "name", candidate)  # AppConfig
+    except ImportError:
+        return candidate
+
+
 def app_labels(apps_list):
     """
     Returns a list of app labels of the given apps_list
     """
-    return [app.split(".")[-1] for app in apps_list]
+    return [get_app_label(app) for app in apps_list]
 
 
 def parse_tenant_config_path(config_path):
