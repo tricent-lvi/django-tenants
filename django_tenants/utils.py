@@ -16,6 +16,12 @@ except ImportError:
 
 from django.core import mail
 
+MULTI_DB_ENABLED = True if len(settings.DATABASES.keys()) > 1 else False
+
+
+def get_db_alias():
+    return settings.DATABASES.keys()
+
 
 def get_tenant_model():
     return get_model(settings.TENANT_MODEL)
@@ -107,40 +113,69 @@ def get_tenant_migration_order():
     return getattr(settings, "TENANT_MIGRATION_ORDER", None)
 
 
-class schema_context(ContextDecorator):
-    # Please do not try and merge this with tenant_context as they are not the same. As pointed out in #501
-    def __init__(self, *args, **kwargs):
-        self.schema_name = args[0]
-        super().__init__()
+# Changes to schema_context and tenant_context when multi db enabled
+if MULTI_DB_ENABLED:
+    from django.db import connections
 
-    def __enter__(self):
-        self.connection = connections[get_tenant_database_alias()]
-        self.previous_tenant = connection.tenant
-        self.connection.set_schema(self.schema_name)
+    def get_previous_tenant_dict():
+        previous_tenant_dict = dict()
+        for db in get_db_alias():
+            previous_tenant_dict[db] = connections[db].tenant
+        return previous_tenant_dict
 
-    def __exit__(self, *exc):
-        if self.previous_tenant is None:
-            self.connection.set_schema_to_public()
+    def apply_previous_tenant_dict(previous_tenant_dict):
+        if not previous_tenant_dict:
+            for db in get_db_alias():
+                connections[db].set_schema_to_public()
         else:
-            self.connection.set_tenant(self.previous_tenant)
+            for db in get_db_alias():
+                connections[db].set_tenant(previous_tenant_dict[db])
 
+    @contextmanager
+    def schema_context(schema_name):
+        previous_tenant_dict = get_previous_tenant_dict()
+        try:
+            for db in get_db_alias():
+                connections[db].set_schema(schema_name)
+            yield
+        finally:
+            apply_previous_tenant_dict(previous_tenant_dict)
 
-class tenant_context(ContextDecorator):
-    # Please do not try and merge this with schema_context as they are not the same. As pointed out in #501
-    def __init__(self, *args, **kwargs):
-        self.tenant = args[0]
-        super().__init__()
+    @contextmanager
+    def tenant_context(tenant):
+        previous_tenant_dict = get_previous_tenant_dict()
+        try:
+            for db in get_db_alias():
+                connections[db].set_tenant(tenant)
+            yield
+        finally:
+            apply_previous_tenant_dict(previous_tenant_dict)
 
-    def __enter__(self):
-        self.connection = connections[get_tenant_database_alias()]
-        self.previous_tenant = connection.tenant
-        self.connection.set_tenant(self.tenant)
+else:
 
-    def __exit__(self, *exc):
-        if self.previous_tenant is None:
-            self.connection.set_schema_to_public()
-        else:
-            self.connection.set_tenant(self.previous_tenant)
+    @contextmanager
+    def schema_context(schema_name):
+        previous_tenant = connection.tenant
+        try:
+            connection.set_schema(schema_name)
+            yield
+        finally:
+            if previous_tenant is None:
+                connection.set_schema_to_public()
+            else:
+                connection.set_tenant(previous_tenant)
+
+    @contextmanager
+    def tenant_context(tenant):
+        previous_tenant = connection.tenant
+        try:
+            connection.set_tenant(tenant)
+            yield
+        finally:
+            if previous_tenant is None:
+                connection.set_schema_to_public()
+            else:
+                connection.set_tenant(previous_tenant)
 
 
 def clean_tenant_url(url_string):
@@ -224,20 +259,11 @@ def schema_rename(
         tenant.save()
 
 
-@lru_cache(maxsize=128)
-def get_app_label(string):
-    candidate = string.split(".")[-1]
-    try:
-        return getattr(import_string(string), "name", candidate)  # AppConfig
-    except ImportError:
-        return candidate
-
-
 def app_labels(apps_list):
     """
     Returns a list of app labels of the given apps_list
     """
-    return [get_app_label(app) for app in apps_list]
+    return [app.split(".")[-1] for app in apps_list]
 
 
 def parse_tenant_config_path(config_path):
@@ -292,74 +318,3 @@ def validate_extra_extensions():
 
         # Make sure the connection used for the check is not reused and doesn't stay idle.
         connection.close()
-
-
-def get_db_alias():
-    return settings.DATABASES.keys()
-
-
-MULTI_DB_ENABLED = True if len(settings.DATABASES.keys()) > 1 else False
-
-# Changes to schema_context and tenant_context when multi db enabled
-if MULTI_DB_ENABLED:
-    from django.db import connections
-
-    def get_previous_tenant_dict():
-        previous_tenant_dict = dict()
-        for db in get_db_alias():
-            previous_tenant_dict[db] = connections[db].tenant
-        return previous_tenant_dict
-
-    def apply_previous_tenant_dict(previous_tenant_dict):
-        if not previous_tenant_dict:
-            for db in get_db_alias():
-                connections[db].set_schema_to_public()
-        else:
-            for db in get_db_alias():
-                connections[db].set_tenant(previous_tenant_dict[db])
-
-    @contextmanager
-    def schema_context(schema_name):
-        previous_tenant_dict = get_previous_tenant_dict()
-        try:
-            for db in get_db_alias():
-                connections[db].set_schema(schema_name)
-            yield
-        finally:
-            apply_previous_tenant_dict(previous_tenant_dict)
-
-    @contextmanager
-    def tenant_context(tenant):
-        previous_tenant_dict = get_previous_tenant_dict()
-        try:
-            for db in get_db_alias():
-                connections[db].set_tenant(tenant)
-            yield
-        finally:
-            apply_previous_tenant_dict(previous_tenant_dict)
-
-else:
-
-    @contextmanager
-    def schema_context(schema_name):
-        previous_tenant = connection.tenant
-        try:
-            connection.set_schema(schema_name)
-            yield
-        finally:
-            if previous_tenant is None:
-                connection.set_schema_to_public()
-            else:
-                connection.set_tenant(previous_tenant)
-
-    @contextmanager
-    def tenant_context(tenant):
-        previous_tenant = connection.tenant
-        try:
-            connection.set_tenant(tenant)
-            yield
-        finally:
-            if previous_tenant is None:
-                connection.set_schema_to_public()
-            else:
-                connection.set_tenant(previous_tenant)
